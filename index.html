@@ -16,15 +16,17 @@
       gap: 12px;
     }
     canvas { border: 1px solid #333; }
-    #ear-val { font-size: 1.2em; }
+    #stats   { font-size: 1.2em; line-height: 2; }
     #status  { font-size: 2.8em; font-weight: bold; }
+    #rowing  { font-size: 2.8em; font-weight: bold; color: #ff9900; min-height: 1.2em; }
   </style>
 </head>
 <body>
 
   <canvas id="canvas" width="640" height="480"></canvas>
-  <div id="ear-val">EAR: --</div>
+  <div id="stats">EAR: -- &nbsp;|&nbsp; Closed: --s</div>
   <div id="status">Loading...</div>
+  <div id="rowing"></div>
 
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
@@ -92,16 +94,26 @@
       drawContour(lm, LEFT_EYE,  color);
       drawContour(lm, RIGHT_EYE, color);
 
-      document.getElementById('ear-val').textContent   = `EAR: ${result.ear}`;
-      document.getElementById('status').textContent    = result.open ? 'OPEN' : 'CLOSED';
-      document.getElementById('status').style.color    = color;
+      // 鼻先トラッキング点（頭部姿勢の視覚確認用）
+      const nx = lm[1].x * canvas.width;
+      const ny = lm[1].y * canvas.height;
+      ctx.fillStyle = result.rowing ? '#ff9900' : '#88aaff';
+      ctx.beginPath();
+      ctx.arc(nx, ny, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      document.getElementById('stats').textContent =
+        `EAR: ${result.ear}  |  Closed: ${result.closed_sec}s  |  Pitch: ${result.pitch}`;
+      document.getElementById('status').textContent = result.open ? 'OPEN' : 'CLOSED';
+      document.getElementById('status').style.color = color;
+      document.getElementById('rowing').textContent = result.rowing ? 'ROWING' : '';
     });
 
     async function main() {
       document.getElementById('status').textContent = 'Initializing Python...';
       await initPyodide();
 
-      document.getElementById('status').textContent = 'Starting camera...';
+      document.getElementById('status').textContent = 'Calibrating head pose... (sit still)';
       const camera = new Camera(video, {
         onFrame: async () => { await faceMesh.send({ image: video }); },
         // --- カメラ解像度 ---
