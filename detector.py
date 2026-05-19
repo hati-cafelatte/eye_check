@@ -2,15 +2,16 @@ import json, time, math
 import numpy as np
 
 # --- 調整するパラメータ ---
-EAR_THRESHOLD      = 0.22   # 目が開いている閾値
+EAR_THRESHOLD      = 0.22   # この値以上で目が開いていると判定
 
 PERCLOS_WINDOW     = 60.0   # PERCLOS を計算する時間ウィンドウ（秒）
-PERCLOS_THRESHOLD  = 0.30   #drowsy閾値
+PERCLOS_THRESHOLD  = 0.30   # この割合以上閉じていたら drowsy
 
-MAR_THRESHOLD      = 0.55   # あくび閾値
-YAWN_COOLDOWN      = 5.0    # 欠伸クールタイム
+MAR_HALF_THRESHOLD = 0.30   # この値以上 MAR_THRESHOLD 未満で口が半開き
+MAR_THRESHOLD      = 0.55   # この値以上で口が開いている（欠伸検知）
+YAWN_COOLDOWN      = 5.0    # 欠伸を連続カウントしない間隔（秒）
 
-TILT_THRESHOLD     = 12.0   #うつむき閾値
+TILT_THRESHOLD     = 12.0   # 頭の左右傾き（度）がこれ以上で tilt
 
 PITCH_DIP          = 0.07   # ベースラインからこの値以上うつむいたら dip
 ROWING_DIP_COUNT   = 2      # この回数以上 dip→復帰 を繰り返したら rowing
@@ -78,8 +79,9 @@ def process(lm_json):
     _ear_log = [(t, c) for t, c in _ear_log if now - t < PERCLOS_WINDOW]
     perclos  = sum(c for _, c in _ear_log) / len(_ear_log) if _ear_log else 0.0
 
-    mar   = _mar(pts)
-    yawn  = mar >= MAR_THRESHOLD
+    mar       = _mar(pts)
+    yawn      = mar >= MAR_THRESHOLD
+    half_open = MAR_HALF_THRESHOLD <= mar < MAR_THRESHOLD
     if yawn and (now - _last_yawn) > YAWN_COOLDOWN:
         _yawn_count += 1
         _last_yawn   = now
@@ -118,6 +120,7 @@ def process(lm_json):
         "closed_sec": round(float(closed_sec), 1),
         "perclos":    round(float(perclos), 3),
         "yawn":       bool(yawn),
+        "half_open":  bool(half_open),
         "yawn_count": int(_yawn_count),
         "head_tilt":  bool(head_tilt),
         "tilt_deg":   round(float(tilt), 1),
