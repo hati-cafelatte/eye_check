@@ -110,6 +110,7 @@
       const sigs = [];
       if (result.rowing)    sigs.push(`<span style="color:#ff9900">ROWING</span>`);
       if (result.yawn)      sigs.push(`<span style="color:#ffdd00">YAWN (${result.yawn_count})</span>`);
+      if (result.half_open) sigs.push(`<span style="color:#aaddff">HALF OPEN</span>`);
       if (result.head_tilt) sigs.push(`<span style="color:#ff66cc">TILT</span>`);
       document.getElementById('signals').innerHTML = sigs.join(' &nbsp; ');
     });
