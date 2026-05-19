@@ -7,7 +7,7 @@ EAR_THRESHOLD      = 0.22   # この値以上で目が開いていると判定
 PERCLOS_WINDOW     = 60.0   # PERCLOS を計算する時間ウィンドウ（秒）
 PERCLOS_THRESHOLD  = 0.30   # この割合以上閉じていたら drowsy
 
-MAR_HALF_THRESHOLD = 0.30   # この値以上 MAR_THRESHOLD 未満で口が半開き
+MAR_HALF_THRESHOLD = 0.20   # この値以上 MAR_THRESHOLD 未満で口が半開き
 MAR_THRESHOLD      = 0.55   # この値以上で口が開いている（欠伸検知）
 YAWN_COOLDOWN      = 5.0    # 欠伸を連続カウントしない間隔（秒）
 
