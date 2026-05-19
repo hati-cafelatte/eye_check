@@ -24,9 +24,9 @@
 <body>
 
   <canvas id="canvas" width="640" height="480"></canvas>
-  <div id="stats">EAR: -- &nbsp;|&nbsp; Closed: --s</div>
+  <div id="stats">EAR: -- | Closed: --s | PERCLOS: -- | Tilt: --°</div>
   <div id="status">Loading...</div>
-  <div id="rowing"></div>
+  <div id="signals" style="font-size:1.6em; font-weight:bold; display:flex; gap:24px; min-height:1.5em;"></div>
 
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
@@ -94,7 +94,6 @@
       drawContour(lm, LEFT_EYE,  color);
       drawContour(lm, RIGHT_EYE, color);
 
-      // 鼻先トラッキング点（頭部姿勢の視覚確認用）
       const nx = lm[1].x * canvas.width;
       const ny = lm[1].y * canvas.height;
       ctx.fillStyle = result.rowing ? '#ff9900' : '#88aaff';
@@ -103,10 +102,16 @@
       ctx.fill();
 
       document.getElementById('stats').textContent =
-        `EAR: ${result.ear}  |  Closed: ${result.closed_sec}s  |  Pitch: ${result.pitch}`;
+        `EAR: ${result.ear}  |  Closed: ${result.closed_sec}s  |  PERCLOS: ${(result.perclos*100).toFixed(1)}%  |  Tilt: ${result.tilt_deg}°`;
+
       document.getElementById('status').textContent = result.open ? 'OPEN' : 'CLOSED';
       document.getElementById('status').style.color = color;
-      document.getElementById('rowing').textContent = result.rowing ? 'ROWING' : '';
+
+      const sigs = [];
+      if (result.rowing)    sigs.push(`<span style="color:#ff9900">ROWING</span>`);
+      if (result.yawn)      sigs.push(`<span style="color:#ffdd00">YAWN (${result.yawn_count})</span>`);
+      if (result.head_tilt) sigs.push(`<span style="color:#ff66cc">TILT</span>`);
+      document.getElementById('signals').innerHTML = sigs.join(' &nbsp; ');
     });
 
     async function main() {
