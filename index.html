@@ -30,6 +30,7 @@
 
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
 
   <script>
@@ -44,6 +45,16 @@
     // ----------------------------------------------------------------
 
     let pyProcess = null;
+
+    // --- 手の静止判定パラメータ ---
+    const HAND_STILL_SEC    = 5.0;   // この秒数以上動きがなければ hand_still
+    const HAND_MOVE_THRESH  = 0.02;  // この距離（正規化座標）以上動いたら「動いた」とみなす
+    // ------------------------------
+
+    let handCentroid  = null;   // 前フレームの手の重心
+    let handStillFrom = null;   // 静止し始めた時刻
+    let handStillSec  = 0;
+    let lastHandLms   = null;   // 描画用
 
     async function initPyodide() {
       const pyodide = await loadPyodide();
@@ -79,6 +90,48 @@
       // -------------------------------------------------------
     });
 
+    const hands = new Hands({
+      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}`
+    });
+
+    hands.setOptions({
+      maxNumHands:            1,
+      // --- 手の検出・トラッキング精度 ---
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence:  0.5,
+      // ----------------------------------
+    });
+
+    hands.onResults(hResults => {
+      lastHandLms = hResults.multiHandLandmarks?.[0] ?? null;
+
+      const now = performance.now() / 1000;
+      if (!lastHandLms) {
+        handCentroid  = null;
+        handStillFrom = null;
+        handStillSec  = 0;
+        return;
+      }
+
+      const cx = lastHandLms.reduce((s, p) => s + p.x, 0) / lastHandLms.length;
+      const cy = lastHandLms.reduce((s, p) => s + p.y, 0) / lastHandLms.length;
+
+      if (handCentroid) {
+        const dx   = cx - handCentroid[0];
+        const dy   = cy - handCentroid[1];
+        const dist = Math.sqrt(dx*dx + dy*dy);
+
+        if (dist < HAND_MOVE_THRESH) {
+          if (!handStillFrom) handStillFrom = now;
+          handStillSec = now - handStillFrom;
+        } else {
+          handStillFrom = null;
+          handStillSec  = 0;
+        }
+      }
+      handCentroid = [cx, cy];
+    });
+
     faceMesh.onResults(async results => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
@@ -112,6 +165,19 @@
       if (result.yawn)      sigs.push(`<span style="color:#ffdd00">YAWN (${result.yawn_count})</span>`);
       if (result.half_open) sigs.push(`<span style="color:#aaddff">HALF OPEN</span>`);
       if (result.head_tilt) sigs.push(`<span style="color:#ff66cc">TILT</span>`);
+
+      if (lastHandLms) {
+        const handColor = handStillSec >= HAND_STILL_SEC ? '#ff4444' : '#44ffcc';
+        lastHandLms.forEach(p => {
+          ctx.fillStyle = handColor;
+          ctx.beginPath();
+          ctx.arc(p.x * canvas.width, p.y * canvas.height, 4, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        if (handStillSec >= HAND_STILL_SEC)
+          sigs.push(`<span style="color:#ff4444">HAND STILL (${handStillSec.toFixed(0)}s)</span>`);
+      }
+
       document.getElementById('signals').innerHTML = sigs.join(' &nbsp; ');
     });
 
@@ -121,7 +187,10 @@
 
       document.getElementById('status').textContent = 'Calibrating head pose... (sit still)';
       const camera = new Camera(video, {
-        onFrame: async () => { await faceMesh.send({ image: video }); },
+        onFrame: async () => {
+          await faceMesh.send({ image: video });
+          await hands.send({ image: video });
+        },
         // --- カメラ解像度 ---
         width: 640, height: 480,
         // --------------------
