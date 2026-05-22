@@ -29,7 +29,7 @@
   <div id="signals" style="font-size:1.6em; font-weight:bold; display:flex; gap:24px; min-height:1.5em;"></div>
 
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5/holistic.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
 
   <script>
@@ -44,15 +44,6 @@
     // ----------------------------------------------------------------
 
     let pyProcess = null;
-
-    // --- 手の静止判定パラメータ ---
-    const HAND_STILL_SEC    = 5.0;   // この秒数以上動きがなければ hand_still
-    const HAND_MOVE_THRESH  = 0.02;  // この距離（正規化座標）以上動いたら「動いた」とみなす
-    // ------------------------------
-
-    let handCentroid  = null;
-    let handStillFrom = null;
-    let handStillSec  = 0;
 
     async function initPyodide() {
       const pyodide = await loadPyodide();
@@ -75,85 +66,53 @@
       ctx.stroke();
     }
 
-    const holistic = new Holistic({
-      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5/${f}`
+    const faceMesh = new FaceMesh({
+      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`
     });
 
-    holistic.setOptions({
+    faceMesh.setOptions({
+      maxNumFaces:            1,
+      refineLandmarks:        true,
       // --- 検出・トラッキング精度（0〜1、上げると重くなる） ---
       minDetectionConfidence: 0.5,
       minTrackingConfidence:  0.5,
       // -------------------------------------------------------
     });
 
-    holistic.onResults(async results => {
+    faceMesh.onResults(async results => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
 
-      const faceLm = results.faceLandmarks;
-      const handLm = results.leftHandLandmarks ?? results.rightHandLandmarks ?? null;
+      if (!results.multiFaceLandmarks?.length || !pyProcess) return;
 
-      if (faceLm && pyProcess) {
-        const pts    = Array.from(faceLm).map(p => [p.x, p.y]);
-        const result = JSON.parse(pyProcess(JSON.stringify(pts)));
-        const color  = result.open ? '#00ff88' : '#ff4444';
+      const lm  = results.multiFaceLandmarks[0];
+      const pts = Array.from(lm).map(p => [p.x, p.y]);
 
-        drawContour(faceLm, LEFT_EYE,  color);
-        drawContour(faceLm, RIGHT_EYE, color);
+      const result = JSON.parse(pyProcess(JSON.stringify(pts)));
+      const color  = result.open ? '#00ff88' : '#ff4444';
 
-        const nx = faceLm[1].x * canvas.width;
-        const ny = faceLm[1].y * canvas.height;
-        ctx.fillStyle = result.rowing ? '#ff9900' : '#88aaff';
-        ctx.beginPath();
-        ctx.arc(nx, ny, 5, 0, Math.PI * 2);
-        ctx.fill();
+      drawContour(lm, LEFT_EYE,  color);
+      drawContour(lm, RIGHT_EYE, color);
 
-        document.getElementById('stats').textContent =
-          `EAR: ${result.ear}  |  Closed: ${result.closed_sec}s  |  PERCLOS: ${(result.perclos*100).toFixed(1)}%  |  Tilt: ${result.tilt_deg}°`;
-        document.getElementById('status').textContent = result.open ? 'OPEN' : 'CLOSED';
-        document.getElementById('status').style.color = color;
+      const nx = lm[1].x * canvas.width;
+      const ny = lm[1].y * canvas.height;
+      ctx.fillStyle = result.rowing ? '#ff9900' : '#88aaff';
+      ctx.beginPath();
+      ctx.arc(nx, ny, 5, 0, Math.PI * 2);
+      ctx.fill();
 
-        const sigs = [];
-        if (result.rowing)    sigs.push(`<span style="color:#ff9900">ROWING</span>`);
-        if (result.yawn)      sigs.push(`<span style="color:#ffdd00">YAWN (${result.yawn_count})</span>`);
-        if (result.half_open) sigs.push(`<span style="color:#aaddff">HALF OPEN</span>`);
-        if (result.head_tilt) sigs.push(`<span style="color:#ff66cc">TILT</span>`);
+      document.getElementById('stats').textContent =
+        `EAR: ${result.ear}  |  Closed: ${result.closed_sec}s  |  PERCLOS: ${(result.perclos*100).toFixed(1)}%  |  Tilt: ${result.tilt_deg}°`;
 
-        const now = performance.now() / 1000;
-        if (handLm) {
-          const cx = handLm.reduce((s, p) => s + p.x, 0) / handLm.length;
-          const cy = handLm.reduce((s, p) => s + p.y, 0) / handLm.length;
+      document.getElementById('status').textContent = result.open ? 'OPEN' : 'CLOSED';
+      document.getElementById('status').style.color = color;
 
-          if (handCentroid) {
-            const dx   = cx - handCentroid[0];
-            const dy   = cy - handCentroid[1];
-            if (Math.sqrt(dx*dx + dy*dy) < HAND_MOVE_THRESH) {
-              if (!handStillFrom) handStillFrom = now;
-              handStillSec = now - handStillFrom;
-            } else {
-              handStillFrom = null;
-              handStillSec  = 0;
-            }
-          }
-          handCentroid = [cx, cy];
-
-          const handColor = handStillSec >= HAND_STILL_SEC ? '#ff4444' : '#44ffcc';
-          handLm.forEach(p => {
-            ctx.fillStyle = handColor;
-            ctx.beginPath();
-            ctx.arc(p.x * canvas.width, p.y * canvas.height, 4, 0, Math.PI * 2);
-            ctx.fill();
-          });
-          if (handStillSec >= HAND_STILL_SEC)
-            sigs.push(`<span style="color:#ff4444">HAND STILL (${handStillSec.toFixed(0)}s)</span>`);
-        } else {
-          handCentroid  = null;
-          handStillFrom = null;
-          handStillSec  = 0;
-        }
-
-        document.getElementById('signals').innerHTML = sigs.join(' &nbsp; ');
-      }
+      const sigs = [];
+      if (result.rowing)    sigs.push(`<span style="color:#ff9900">ROWING</span>`);
+      if (result.yawn)      sigs.push(`<span style="color:#ffdd00">YAWN (${result.yawn_count})</span>`);
+      if (result.half_open) sigs.push(`<span style="color:#aaddff">HALF OPEN</span>`);
+      if (result.head_tilt) sigs.push(`<span style="color:#ff66cc">TILT</span>`);
+      document.getElementById('signals').innerHTML = sigs.join(' &nbsp; ');
     });
 
     async function main() {
@@ -162,7 +121,7 @@
 
       document.getElementById('status').textContent = 'Calibrating head pose... (sit still)';
       const camera = new Camera(video, {
-        onFrame: async () => { await holistic.send({ image: video }); },
+        onFrame: async () => { await faceMesh.send({ image: video }); },
         // --- カメラ解像度 ---
         width: 640, height: 480,
         // --------------------
