@@ -24,6 +24,10 @@
 <body>
 
   <canvas id="canvas" width="640" height="480"></canvas>
+  <div id="cam-select" style="display:flex; gap:8px; align-items:center;">
+    <select id="cam-list" style="background:#222; color:#eee; font-family:monospace; padding:4px;"></select>
+    <button id="cam-start" style="background:#333; color:#eee; font-family:monospace; padding:4px 12px; cursor:pointer;">Start</button>
+  </div>
   <div id="stats">EAR: -- | Closed: --s | PERCLOS: -- | Tilt: --°</div>
   <div id="status">Loading...</div>
   <div id="signals"></div>
@@ -190,23 +194,40 @@
       document.getElementById('status').textContent = 'Initializing hand detector...';
       await initHandDetector();
 
-      document.getElementById('status').textContent = 'Calibrating head pose... (sit still)';
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          // --- カメラ解像度 ---
-          width: 640, height: 480,
-          // --------------------
-        }
+      // デバイス一覧を取得してセレクタに追加
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams    = devices.filter(d => d.kind === 'videoinput');
+      const sel     = document.getElementById('cam-list');
+      cams.forEach((d, i) => {
+        const opt   = document.createElement('option');
+        opt.value   = d.deviceId;
+        opt.text    = d.label || `Camera ${i + 1}`;
+        sel.appendChild(opt);
       });
-      video.srcObject = stream;
-      await new Promise(r => { video.onloadedmetadata = r; });
-      await video.play();
 
-      (async function loop() {
-        await faceMesh.send({ image: video });
-        requestAnimationFrame(loop);
-      })();
+      document.getElementById('cam-start').onclick = async () => {
+        document.getElementById('cam-select').style.display = 'none';
+        document.getElementById('status').textContent = 'Calibrating head pose... (sit still)';
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            deviceId: { exact: sel.value },
+            // --- カメラ解像度 ---
+            width: 640, height: 480,
+            // --------------------
+          }
+        });
+        video.srcObject = stream;
+        await new Promise(r => { video.onloadedmetadata = r; });
+        await video.play();
+
+        (async function loop() {
+          await faceMesh.send({ image: video });
+          requestAnimationFrame(loop);
+        })();
+      };
+
+      document.getElementById('status').textContent = 'Ready — カメラを選んで Start';
     }
 
     main().catch(e => {
