@@ -18,26 +18,19 @@
     canvas { border: 1px solid #333; }
     #stats   { font-size: 1.2em; line-height: 2; }
     #status  { font-size: 2.8em; font-weight: bold; }
-    #signals { font-size: 1.6em; font-weight: bold; display: flex; gap: 24px; min-height: 1.5em; }
+    #rowing  { font-size: 2.8em; font-weight: bold; color: #ff9900; min-height: 1.2em; }
   </style>
 </head>
 <body>
 
   <canvas id="canvas" width="640" height="480"></canvas>
-  <div id="cam-select" style="display:flex; gap:8px; align-items:center;">
-    <select id="cam-list" style="background:#222; color:#eee; font-family:monospace; padding:4px;"></select>
-    <button id="cam-start" style="background:#333; color:#eee; font-family:monospace; padding:4px 12px; cursor:pointer;">Start</button>
-  </div>
   <div id="stats">EAR: -- | Closed: --s | PERCLOS: -- | Tilt: --°</div>
   <div id="status">Loading...</div>
-  <div id="signals"></div>
+  <div id="signals" style="font-size:1.6em; font-weight:bold; display:flex; gap:24px; min-height:1.5em;"></div>
 
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.17.0/dist/tf-core.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.17.0/dist/tf-backend-webgl.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.17.0/dist/tf-converter.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection@2.0.1/dist/hand-pose-detection.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
 
   <script>
     const canvas = document.getElementById('canvas');
@@ -45,20 +38,12 @@
     const video  = document.createElement('video');
     video.setAttribute('playsinline', '');
 
+    // --- 描画する目のランドマーク番号（detector.py の _L/_R と対応） ---
     const LEFT_EYE  = [362, 385, 387, 263, 373, 380];
     const RIGHT_EYE = [33,  160, 158, 133, 153, 144];
+    // ----------------------------------------------------------------
 
-    // --- 手の静止判定パラメータ ---
-    const HAND_STILL_SEC   = 5.0;   // この秒数以上動きがなければ HAND STILL
-    const HAND_MOVE_THRESH = 15;    // この距離（ピクセル）以上動いたら「動いた」とみなす
-    // ------------------------------
-
-    let pyProcess    = null;
-    let handDetector = null;
-    let handCentroid  = null;
-    let handStillFrom = null;
-    let handStillSec  = 0;
-    let lastHandKps   = null;
+    let pyProcess = null;
 
     async function initPyodide() {
       const pyodide = await loadPyodide();
@@ -66,19 +51,6 @@
       const code = await fetch('detector.py').then(r => r.text());
       await pyodide.runPythonAsync(code);
       pyProcess = pyodide.globals.get('process');
-    }
-
-    async function initHandDetector() {
-      await tf.setBackend('webgl');
-      await tf.ready();
-      const model  = handPoseDetection.SupportedModels.MediaPipeHands;
-      handDetector = await handPoseDetection.createDetector(model, {
-        runtime: 'tfjs',
-        // --- 手の検出設定 ---
-        maxHands:           1,
-        modelType:          'lite',   // 'full' にすると精度向上・重くなる
-        // --------------------
-      });
     }
 
     function drawContour(lm, indices, color) {
@@ -92,34 +64,6 @@
       });
       ctx.closePath();
       ctx.stroke();
-    }
-
-    function updateHand(keypoints) {
-      const now = performance.now() / 1000;
-      if (!keypoints || keypoints.length === 0) {
-        handCentroid  = null;
-        handStillFrom = null;
-        handStillSec  = 0;
-        lastHandKps   = null;
-        return;
-      }
-
-      lastHandKps = keypoints;
-      const cx = keypoints.reduce((s, p) => s + p.x, 0) / keypoints.length;
-      const cy = keypoints.reduce((s, p) => s + p.y, 0) / keypoints.length;
-
-      if (handCentroid) {
-        const dx = cx - handCentroid[0];
-        const dy = cy - handCentroid[1];
-        if (Math.sqrt(dx*dx + dy*dy) < HAND_MOVE_THRESH) {
-          if (!handStillFrom) handStillFrom = now;
-          handStillSec = now - handStillFrom;
-        } else {
-          handStillFrom = null;
-          handStillSec  = 0;
-        }
-      }
-      handCentroid = [cx, cy];
     }
 
     const faceMesh = new FaceMesh({
@@ -139,27 +83,11 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
 
-      // 手の検出（FaceMesh の結果描画後に非同期で実行）
-      if (handDetector) {
-        const hands = await handDetector.estimateHands(canvas);
-        updateHand(hands[0]?.keypoints ?? null);
-      }
-
-      // 手のランドマーク描画
-      if (lastHandKps) {
-        const handColor = handStillSec >= HAND_STILL_SEC ? '#ff4444' : '#44ffcc';
-        lastHandKps.forEach(p => {
-          ctx.fillStyle = handColor;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
-          ctx.fill();
-        });
-      }
-
       if (!results.multiFaceLandmarks?.length || !pyProcess) return;
 
-      const lm     = results.multiFaceLandmarks[0];
-      const pts    = Array.from(lm).map(p => [p.x, p.y]);
+      const lm  = results.multiFaceLandmarks[0];
+      const pts = Array.from(lm).map(p => [p.x, p.y]);
+
       const result = JSON.parse(pyProcess(JSON.stringify(pts)));
       const color  = result.open ? '#00ff88' : '#ff4444';
 
@@ -175,15 +103,15 @@
 
       document.getElementById('stats').textContent =
         `EAR: ${result.ear}  |  Closed: ${result.closed_sec}s  |  PERCLOS: ${(result.perclos*100).toFixed(1)}%  |  Tilt: ${result.tilt_deg}°`;
+
       document.getElementById('status').textContent = result.open ? 'OPEN' : 'CLOSED';
       document.getElementById('status').style.color = color;
 
       const sigs = [];
-      if (result.rowing)                       sigs.push(`<span style="color:#ff9900">ROWING</span>`);
-      if (result.yawn)                         sigs.push(`<span style="color:#ffdd00">YAWN (${result.yawn_count})</span>`);
-      if (result.half_open)                    sigs.push(`<span style="color:#aaddff">HALF OPEN</span>`);
-      if (result.head_tilt)                    sigs.push(`<span style="color:#ff66cc">TILT</span>`);
-      if (handStillSec >= HAND_STILL_SEC)      sigs.push(`<span style="color:#ff4444">HAND STILL (${handStillSec.toFixed(0)}s)</span>`);
+      if (result.rowing)    sigs.push(`<span style="color:#ff9900">ROWING</span>`);
+      if (result.yawn)      sigs.push(`<span style="color:#ffdd00">YAWN (${result.yawn_count})</span>`);
+      if (result.half_open) sigs.push(`<span style="color:#aaddff">HALF OPEN</span>`);
+      if (result.head_tilt) sigs.push(`<span style="color:#ff66cc">TILT</span>`);
       document.getElementById('signals').innerHTML = sigs.join(' &nbsp; ');
     });
 
@@ -191,43 +119,14 @@
       document.getElementById('status').textContent = 'Initializing Python...';
       await initPyodide();
 
-      document.getElementById('status').textContent = 'Initializing hand detector...';
-      await initHandDetector();
-
-      // デバイス一覧を取得してセレクタに追加
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const cams    = devices.filter(d => d.kind === 'videoinput');
-      const sel     = document.getElementById('cam-list');
-      cams.forEach((d, i) => {
-        const opt   = document.createElement('option');
-        opt.value   = d.deviceId;
-        opt.text    = d.label || `Camera ${i + 1}`;
-        sel.appendChild(opt);
+      document.getElementById('status').textContent = 'Calibrating head pose... (sit still)';
+      const camera = new Camera(video, {
+        onFrame: async () => { await faceMesh.send({ image: video }); },
+        // --- カメラ解像度 ---
+        width: 640, height: 480,
+        // --------------------
       });
-
-      document.getElementById('cam-start').onclick = async () => {
-        document.getElementById('cam-select').style.display = 'none';
-        document.getElementById('status').textContent = 'Calibrating head pose... (sit still)';
-
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            deviceId: { exact: sel.value },
-            // --- カメラ解像度 ---
-            width: 640, height: 480,
-            // --------------------
-          }
-        });
-        video.srcObject = stream;
-        await new Promise(r => { video.onloadedmetadata = r; });
-        await video.play();
-
-        (async function loop() {
-          await faceMesh.send({ image: video });
-          requestAnimationFrame(loop);
-        })();
-      };
-
-      document.getElementById('status').textContent = 'Ready — カメラを選んで Start';
+      await camera.start();
     }
 
     main().catch(e => {
