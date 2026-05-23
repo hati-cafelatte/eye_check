@@ -15,10 +15,11 @@
       padding: 20px;
       gap: 12px;
     }
-    canvas { border: 1px solid #333; }
-    #stats   { font-size: 1.2em; line-height: 2; }
-    #status  { font-size: 2.8em; font-weight: bold; }
-    #signals { font-size: 1.6em; font-weight: bold; display: flex; gap: 24px; min-height: 1.5em; }
+    canvas  { border: 1px solid #333; }
+    #stats  { font-size: 1.2em; line-height: 2; }
+    #status { font-size: 2.8em; font-weight: bold; }
+    #score  { font-size: 1.4em; }
+    #signals { font-size: 1.6em; font-weight: bold; display: flex; gap: 24px; min-height: 1.5em; flex-wrap: wrap; }
   </style>
 </head>
 <body>
@@ -26,6 +27,7 @@
   <canvas id="canvas" width="640" height="480"></canvas>
   <div id="stats">EAR: -- | Closed: --s | PERCLOS: -- | Tilt: --°</div>
   <div id="status">Loading...</div>
+  <div id="score"></div>
   <div id="signals"></div>
 
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
@@ -41,13 +43,34 @@
     const video  = document.createElement('video');
     video.setAttribute('playsinline', '');
 
-    const LEFT_EYE  = [362, 385, 387, 263, 373, 380];
-    const RIGHT_EYE = [33,  160, 158, 133, 153, 144];
+    const LEFT_EYE   = [362, 385, 387, 263, 373, 380];
+    const RIGHT_EYE  = [33,  160, 158, 133, 153, 144];
+    const FACE_OVAL  = [10,338,297,332,284,251,389,356,454,323,361,288,
+                        397,365,379,378,400,377,152,148,176,149,150,136,
+                        172,58,132,93,234,127,162,21,54,103,67,109];
+    const HAND_CONN  = [
+      [0,1],[1,2],[2,3],[3,4],
+      [0,5],[5,6],[6,7],[7,8],
+      [0,9],[9,10],[10,11],[11,12],
+      [0,13],[13,14],[14,15],[15,16],
+      [0,17],[17,18],[18,19],[19,20],
+      [5,9],[9,13],[13,17]
+    ];
 
     // --- 手の静止判定パラメータ ---
     const HAND_STILL_SEC   = 5.0;   // この秒数以上動きがなければ HAND STILL
     const HAND_MOVE_THRESH = 15;    // この距離（ピクセル）以上動いたら「動いた」とみなす
     // ------------------------------
+
+    // --- 確度スコアの重み ---
+    const W_CLOSED_SEC = 35;   // 閉眼時間（3秒で上限）
+    const W_PERCLOS    = 25;   // PERCLOS
+    const W_ROWING     = 15;   // うなずき繰り返し
+    const W_HAND_STILL = 15;   // 手の静止（30秒で上限）
+    const W_YAWN       =  8;   // 欠伸
+    const W_TILT       =  5;   // 頭の傾き
+    const W_HALF_OPEN  =  4;   // 口の半開き
+    // ------------------------
 
     let pyProcess    = null;
     let handDetector = null;
@@ -67,17 +90,18 @@
     async function initHandDetector() {
       await tf.setBackend('webgl');
       await tf.ready();
-      const model  = handPoseDetection.SupportedModels.MediaPipeHands;
-      handDetector = await handPoseDetection.createDetector(model, {
-        runtime: 'tfjs',
-        // --- 手の検出設定 ---
-        maxHands:           1,
-        modelType:          'lite',   // 'full' にすると精度向上・重くなる
-        // --------------------
-      });
+      handDetector = await handPoseDetection.createDetector(
+        handPoseDetection.SupportedModels.MediaPipeHands, {
+          runtime:   'tfjs',
+          // --- 手の検出設定 ---
+          maxHands:  1,
+          modelType: 'lite',   // 'full' にすると精度向上・重くなる
+          // --------------------
+        }
+      );
     }
 
-    function drawContour(lm, indices, color) {
+    function drawContour(lm, indices, color, close = true) {
       ctx.strokeStyle = color;
       ctx.lineWidth   = 2;
       ctx.beginPath();
@@ -86,36 +110,58 @@
         const y = lm[i].y * canvas.height;
         n === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
-      ctx.closePath();
+      if (close) ctx.closePath();
       ctx.stroke();
+    }
+
+    function drawHandSkeleton(kps, color) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth   = 2;
+      HAND_CONN.forEach(([a, b]) => {
+        ctx.beginPath();
+        ctx.moveTo(kps[a].x, kps[a].y);
+        ctx.lineTo(kps[b].x, kps[b].y);
+        ctx.stroke();
+      });
+      kps.forEach(p => {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
     }
 
     function updateHand(keypoints) {
       const now = performance.now() / 1000;
       if (!keypoints || keypoints.length === 0) {
-        handCentroid  = null;
-        handStillFrom = null;
-        handStillSec  = 0;
-        lastHandKps   = null;
+        handCentroid = null; handStillFrom = null; handStillSec = 0; lastHandKps = null;
         return;
       }
-
       lastHandKps = keypoints;
       const cx = keypoints.reduce((s, p) => s + p.x, 0) / keypoints.length;
       const cy = keypoints.reduce((s, p) => s + p.y, 0) / keypoints.length;
-
       if (handCentroid) {
-        const dx = cx - handCentroid[0];
-        const dy = cy - handCentroid[1];
+        const dx = cx - handCentroid[0], dy = cy - handCentroid[1];
         if (Math.sqrt(dx*dx + dy*dy) < HAND_MOVE_THRESH) {
           if (!handStillFrom) handStillFrom = now;
           handStillSec = now - handStillFrom;
         } else {
-          handStillFrom = null;
-          handStillSec  = 0;
+          handStillFrom = null; handStillSec = 0;
         }
       }
       handCentroid = [cx, cy];
+    }
+
+    function calcScore(r) {
+      let s = 0;
+      s += Math.min(r.closed_sec / 3.0, 1.0) * W_CLOSED_SEC;
+      s += r.perclos                           * W_PERCLOS;
+      s += (r.rowing    ? 1 : 0)               * W_ROWING;
+      s += Math.min(handStillSec / 30.0, 1.0)  * W_HAND_STILL;
+      s += (r.yawn      ? 1 : 0)               * W_YAWN;
+      s += (r.head_tilt ? 1 : 0)               * W_TILT;
+      s += (r.half_open ? 1 : 0)               * W_HALF_OPEN;
+      return Math.min(Math.round(s), 100);
     }
 
     const faceMesh = new FaceMesh({
@@ -135,21 +181,14 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
 
-      // 手の検出（FaceMesh の結果描画後に非同期で実行）
       if (handDetector) {
         const hands = await handDetector.estimateHands(canvas);
         updateHand(hands[0]?.keypoints ?? null);
       }
 
-      // 手のランドマーク描画
       if (lastHandKps) {
-        const handColor = handStillSec >= HAND_STILL_SEC ? '#ff4444' : '#44ffcc';
-        lastHandKps.forEach(p => {
-          ctx.fillStyle = handColor;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
-          ctx.fill();
-        });
+        const hc = handStillSec >= HAND_STILL_SEC ? '#ff4444' : '#44ffcc';
+        drawHandSkeleton(lastHandKps, hc);
       }
 
       if (!results.multiFaceLandmarks?.length || !pyProcess) return;
@@ -157,29 +196,35 @@
       const lm     = results.multiFaceLandmarks[0];
       const pts    = Array.from(lm).map(p => [p.x, p.y]);
       const result = JSON.parse(pyProcess(JSON.stringify(pts)));
-      const color  = result.open ? '#00ff88' : '#ff4444';
+      const eyeColor  = result.open ? '#00ff88' : '#ff4444';
+      const faceColor = '#4488ff';
 
-      drawContour(lm, LEFT_EYE,  color);
-      drawContour(lm, RIGHT_EYE, color);
+      drawContour(lm, FACE_OVAL,  faceColor, true);
+      drawContour(lm, LEFT_EYE,   eyeColor,  true);
+      drawContour(lm, RIGHT_EYE,  eyeColor,  true);
 
-      const nx = lm[1].x * canvas.width;
-      const ny = lm[1].y * canvas.height;
+      // 鼻先点
       ctx.fillStyle = result.rowing ? '#ff9900' : '#88aaff';
       ctx.beginPath();
-      ctx.arc(nx, ny, 5, 0, Math.PI * 2);
+      ctx.arc(lm[1].x * canvas.width, lm[1].y * canvas.height, 5, 0, Math.PI * 2);
       ctx.fill();
+
+      const score     = calcScore(result);
+      const scoreColor = score < 30 ? '#00cc66' : score < 60 ? '#ffaa00' : '#ff3333';
 
       document.getElementById('stats').textContent =
         `EAR: ${result.ear}  |  Closed: ${result.closed_sec}s  |  PERCLOS: ${(result.perclos*100).toFixed(1)}%  |  Tilt: ${result.tilt_deg}°`;
       document.getElementById('status').textContent = result.open ? 'OPEN' : 'CLOSED';
-      document.getElementById('status').style.color = color;
+      document.getElementById('status').style.color = eyeColor;
+      document.getElementById('score').innerHTML =
+        `Sleep probability: <span style="color:${scoreColor}; font-size:1.4em; font-weight:bold">${score}%</span>`;
 
       const sigs = [];
-      if (result.rowing)                       sigs.push(`<span style="color:#ff9900">ROWING</span>`);
-      if (result.yawn)                         sigs.push(`<span style="color:#ffdd00">YAWN (${result.yawn_count})</span>`);
-      if (result.half_open)                    sigs.push(`<span style="color:#aaddff">HALF OPEN</span>`);
-      if (result.head_tilt)                    sigs.push(`<span style="color:#ff66cc">TILT</span>`);
-      if (handStillSec >= HAND_STILL_SEC)      sigs.push(`<span style="color:#ff4444">HAND STILL (${handStillSec.toFixed(0)}s)</span>`);
+      if (result.rowing)                  sigs.push(`<span style="color:#ff9900">ROWING</span>`);
+      if (result.yawn)                    sigs.push(`<span style="color:#ffdd00">YAWN (${result.yawn_count})</span>`);
+      if (result.half_open)               sigs.push(`<span style="color:#aaddff">HALF OPEN</span>`);
+      if (result.head_tilt)               sigs.push(`<span style="color:#ff66cc">TILT</span>`);
+      if (handStillSec >= HAND_STILL_SEC) sigs.push(`<span style="color:#ff4444">HAND STILL (${handStillSec.toFixed(0)}s)</span>`);
       document.getElementById('signals').innerHTML = sigs.join(' &nbsp; ');
     });
 
